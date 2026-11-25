@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="es"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#0f766e">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon-192.png">
+<title>Pedidos Reko</title>
+<style>
+:root{--bg:#f4f5f7;--c:#fff;--t:#1a1a1a;--m:#666;--p:#0f766e;--b:#d6d6d6}
+@media(prefers-color-scheme:dark){:root{--bg:#121212;--c:#1e1e1e;--t:#eee;--m:#9a9a9a;--b:#383838}}
+*{box-sizing:border-box}
+body{margin:0;font:16px system-ui,sans-serif;background:var(--bg);color:var(--t);padding-bottom:76px}
+header{display:flex;gap:8px;align-items:center;justify-content:space-between;padding:10px 12px;background:var(--p);color:#fff}
+header span{font-size:13px;flex:1;text-align:right}
+main{padding:10px;max-width:640px;margin:auto}
+.card{background:var(--c);border:1px solid var(--b);border-radius:10px;padding:12px;margin-bottom:10px}
+input,select,textarea{width:100%;padding:10px;margin:4px 0;font:inherit;color:var(--t);background:var(--bg);border:1px solid var(--b);border-radius:8px}
+label{font-size:13px;color:var(--m);display:block;margin-top:6px}
+button{font:inherit;padding:10px 14px;border:0;border-radius:8px;background:var(--p);color:#fff}
+button.s{background:#ffffff33;padding:6px 10px}
+button.big{width:100%;padding:14px;font-weight:600}
+button.g{background:var(--bg);color:var(--t);border:1px solid var(--b)}
+nav{position:fixed;bottom:0;left:0;right:0;display:flex;background:var(--c);border-top:1px solid var(--b);padding-bottom:env(safe-area-inset-bottom)}
+nav button{flex:1;background:none;color:var(--m);border-radius:0;padding:14px 4px}
+nav button.on{color:var(--p);font-weight:700}
+.row{display:flex;gap:8px;align-items:center;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--b)}
+.row input{width:80px;flex:none}
+.tot{font-size:18px;font-weight:700;text-align:right}
+small{color:var(--m)}
+.tag{font-size:12px;padding:2px 8px;border-radius:10px;background:var(--bg);border:1px solid var(--b)}
+summary{cursor:pointer}
+#toast{position:fixed;left:12px;right:12px;bottom:84px;background:#222;color:#fff;padding:12px;border-radius:8px;display:none;z-index:9}
+</style></head><body>
+<div id="app"></div><div id="toast"></div>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.4/dist/umd/supabase.js"></script>
+<script>
+const SB=supabase.createClient('https://xjafdoieponfxocwyszn.supabase.co','sb_publishable_f5bahL5XoWC-2aKEgBt4PA_DxpJSLdf');
+const Q=s=>document.querySelector(s),L=k=>JSON.parse(localStorage.getItem(k)||'null'),S=(k,v)=>localStorage.setItem(k,JSON.stringify(v));
+const E=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const M=n=>'$'+Number(n||0).toLocaleString('es-AR',{minimumFractionDigits:2,maximumFractionDigits:2});
+let me=L('me'),view='nuevo',prods=L('prods')||[],cls=L('cls')||[],orders=L('orders')||[],syncing=false;
+const adm=()=>me&&me.rol==='admin';
+const toast=t=>{const e=Q('#toast');e.textContent=t;e.style.display='block';setTimeout(()=>e.style.display='none',3500)};
+
+async function init(){
+  const {data}=await SB.auth.getSession();
+  if(data.session&&navigator.onLine){
+    const r=await SB.from('profiles').select('*').eq('id',data.session.user.id).single();
+    if(r.data){me=r.data;S('me',me)}
+  }else if(!data.session&&navigator.onLine){me=null}
+  if(me){await loadData();sync()}
+  render();
+}
+async function login(){
+  const {error}=await SB.auth.signInWithPassword({email:Q('#em').value.trim(),password:Q('#pw').value});
+  if(error)return toast('Email o contraseña incorrectos');
+  init();
+}
+async function logout(){
+  if((L('queue')||[]).length)return toast('Hay pedidos sin enviar. Conectate a internet antes de salir.');
+  await SB.auth.signOut();localStorage.clear();me=null;render();
+}
+async function loadData(){
+  if(!navigator.onLine||!me)return;
+  const [p,c,o]=await Promise.all([
+    SB.from('productos').select('*').order('nombre'),
+    SB.from('clientes').select('*').order('nombre_local'),
+    SB.from('pedidos').select('*,clientes(*),pedido_items(*),profiles(nombre)').order('creado_en',{ascending:false}).limit(100)]);
+  if(p.data){prods=p.data;S('prods',prods)}
+  if(c.data){cls=c.data;S('cls',cls)}
+  if(o.data){orders=o.data;S('orders',orders)}
+}
+async function sync(){
+  if(syncing||!navigator.onLine||!me)return;
+  let q=L('queue')||[];if(!q.length)return;
+  syncing=true;
+  for(const o of [...q]){
+    try{
+      let r;
+      if(o.cliente_nuevo){r=await SB.from('clientes').upsert(o.cliente_nuevo,{onConflict:'id',ignoreDuplicates:true});if(r.error)throw r.error}
+      r=await SB.from('pedidos').upsert(o.pedido,{onConflict:'id',ignoreDuplicates:true});if(r.error)throw r.error;
+      r=await SB.from('pedido_items').upsert(o.items,{onConflict:'id',ignoreDuplicates:true});if(r.error)throw r.error;
+      q=q.filter(x=>x.pedido.id!==o.pedido.id);S('queue',q);
+    }catch(e){console.error(e);toast('No se pudo enviar: '+(e.message||e));break}
+  }
+  syncing=false;await loadData();render();
+}
+function go(v){view=v;render()}
+function render(){
+  const A=Q('#app');
+  if(!me){A.innerHTML=`<main><div class="card"><h2>Pedidos Reko</h2><input id="em" type="email" placeholder="Email" autocomplete="username"><input id="pw" type="password" placeholder="Contraseña" autocomplete="current-password"><button class="big" onclick="login()">Ingresar</button></div></main>`;return}
+  const q=(L('queue')||[]).length;
+  const tabs=[['nuevo','Nuevo pedido'],['mis','Pedidos'],...(adm()?[['prod','Productos']]:[])];
+  A.innerHTML=`<header><b>${E(me.nombre)}</b><span>${navigator.onLine?'En línea':'Sin conexión'}${q?` · ${q} sin enviar`:''}</span><button class="s" onclick="logout()">Salir</button></header><main id="main"></main><nav>${tabs.map(t=>`<button class="${view===t[0]?'on':''}" onclick="go('${t[0]}')">${t[1]}</button>`).join('')}</nav>`;
+  ({nuevo:vNuevo,mis:vMis,prod:vProd})[view]();
+}
+function vNuevo(){
+  const act=prods.filter(p=>p.activo);
+  const F=[['nombre_local','Nombre del local *'],['telefono','Teléfono *','tel'],['calle','Calle *'],['numero','Número *'],['localidad','Localidad *'],['ciudad','Ciudad *'],['cuit_dni','CUIT o DNI (opcional)'],['razon_social','Razón social (opcional)'],['contacto','Nombre del contacto (opcional)']];
+  Q('#main').innerHTML=`<div class="card"><label>Cliente</label><select id="cl" onchange="Q('#nc').style.display=this.value=='new'?'block':'none'"><option value="">Elegir…</option>${cls.map(c=>`<option value="${c.id}">${E(c.nombre_local)} – ${E(c.calle)} ${E(c.numero)}</option>`).join('')}<option value="new">+ Cliente nuevo</option></select>
+<div id="nc" style="display:none">${F.map(f=>`<input id="n_${f[0]}" type="${f[2]||'text'}" placeholder="${f[1]}">`).join('')}<select id="n_condicion_iva"><option value="">Condición frente al IVA (opcional)</option>${['Responsable Inscripto','Monotributo','Exento','Consumidor Final'].map(x=>`<option>${x}</option>`).join('')}</select></div></div>
+<div class="card"><label>Productos</label>${act.map(p=>`<div class="row"><div><b>${E(p.nombre)}</b><br><small>${E(p.sku)} · ${M(p.precio)} · comisión ${p.comision_pct}%</small></div><input type="number" min="0" step="1" inputmode="numeric" data-id="${p.id}" oninput="tot()" placeholder="0"></div>`).join('')||'<p>Sin productos cargados.</p>'}<p class="tot">Total: <span id="tt">${M(0)}</span></p></div>
+<div class="card"><label>Condición de pago</label><select id="cp"><option>Efectivo</option><option>Transferencia</option></select><label>Observaciones</label><textarea id="ob" rows="3"></textarea></div>
+<button class="big" onclick="guardar()">Guardar pedido</button>`;
+}
+function tot(){
+  let t=0;document.querySelectorAll('[data-id]').forEach(i=>{const p=prods.find(x=>x.id==i.dataset.id);t+=(+i.value||0)*p.precio});
+  Q('#tt').textContent=M(t);
+}
+function guardar(){
+  const its=[...document.querySelectorAll('[data-id]')].filter(i=>+i.value>0).map(i=>{const p=prods.find(x=>x.id==i.dataset.id);return{id:crypto.randomUUID(),producto_id:p.id,cantidad:+i.value,precio_unitario:+p.precio}});
+  let cl=Q('#cl').value,nuevo=null,nombre='';
+  if(!cl)return toast('Elegí un cliente');
+  if(!its.length)return toast('Agregá al menos un producto');
+  if(cl==='new'){
+    const g=k=>Q('#n_'+k).value.trim()||null;
+    nuevo={id:crypto.randomUUID(),nombre_local:g('nombre_local'),telefono:g('telefono'),calle:g('calle'),numero:g('numero'),localidad:g('localidad'),ciudad:g('ciudad'),cuit_dni:g('cuit_dni'),razon_social:g('razon_social'),contacto:g('contacto'),condicion_iva:g('condicion_iva')};
+    if(['nombre_local','telefono','calle','numero','localidad','ciudad'].some(k=>!nuevo[k]))return toast('Completá los datos obligatorios (*) del cliente');
+    cl=nuevo.id;nombre=nuevo.nombre_local;cls.push(nuevo);S('cls',cls);
+  }else nombre=(cls.find(c=>c.id==cl)||{}).nombre_local;
+  const total=its.reduce((s,i)=>s+i.cantidad*i.precio_unitario,0);
+  const q=L('queue')||[];
+  q.push({pedido:{id:crypto.randomUUID(),cliente_id:cl,condicion_pago:Q('#cp').value,observaciones:Q('#ob').value.trim()||null,estado:'pendiente'},items:[],cliente_nuevo:nuevo,txt:{cliente:nombre,total}});
+  const o=q[q.length-1];o.items=its.map(i=>({...i,pedido_id:o.pedido.id}));
+  S('queue',q);toast('Pedido guardado');view='mis';render();sync();
+}
+function vMis(){
+  const q=L('queue')||[];
+  Q('#main').innerHTML=q.map(o=>`<div class="card"><b>${E(o.txt.cliente)}</b> <span class="tag">Sin enviar</span><br><small>${M(o.txt.total)} · se envía al tener conexión</small></div>`).join('')
+  +(orders.map(o=>{
+    const c=o.clientes||{},tot=(o.pedido_items||[]).reduce((s,i)=>s+i.cantidad*i.precio_unitario,0);
+    return `<div class="card"><details><summary><b>#${o.numero} ${E(c.nombre_local)}</b> <span class="tag">${E(o.estado)}</span><br><small>${new Date(o.creado_en).toLocaleDateString('es-AR')} · ${M(tot)}${adm()?' · '+E((o.profiles||{}).nombre):''}</small></summary>
+<p>${(o.pedido_items||[]).map(i=>`${i.cantidad} × ${E(i.nombre)} (${E(i.sku)}) — ${M(i.cantidad*i.precio_unitario)}`).join('<br>')}</p>
+<small>${E(c.calle)} ${E(c.numero)}, ${E(c.localidad)}, ${E(c.ciudad)} · Tel ${E(c.telefono)}<br>Pago: ${E(o.condicion_pago)}${o.observaciones?'<br>Obs: '+E(o.observaciones):''}</small>
+${adm()?`<label>Estado</label><select onchange="setEst('${o.id}',this.value)">${['pendiente','facturado','entregado'].map(e=>`<option ${e==o.estado?'selected':''}>${e}</option>`).join('')}</select><button class="g" style="margin-top:6px" onclick="copiar('${o.id}')">Copiar datos para Contabilium</button>`:''}</details></div>`}).join('')||(q.length?'':'<p>Todavía no hay pedidos.</p>'));
+}
+async function setEst(id,v){const r=await SB.from('pedidos').update({estado:v}).eq('id',id);if(r.error)return toast(r.error.message);await loadData();render()}
+function copiar(id){
+  const o=orders.find(x=>x.id==id),c=o.clientes||{};
+  const t=[`Pedido #${o.numero} - ${new Date(o.creado_en).toLocaleDateString('es-AR')}`,`Cliente: ${c.nombre_local||''}${c.razon_social?' ('+c.razon_social+')':''}`,`CUIT/DNI: ${c.cuit_dni||'Consumidor final'} · IVA: ${c.condicion_iva||'-'}`,`Dirección: ${c.calle} ${c.numero}, ${c.localidad}, ${c.ciudad}`,`Tel: ${c.telefono}${c.contacto?' · Contacto: '+c.contacto:''}`,`Pago: ${o.condicion_pago}`,'',...(o.pedido_items||[]).map(i=>`${i.sku} | ${i.nombre} | ${i.cantidad} x ${i.precio_unitario} = ${(i.cantidad*i.precio_unitario).toFixed(2)}`),'',`Total: ${o.total}`,o.observaciones?'Obs: '+o.observaciones:''].join('\n');
+  navigator.clipboard.writeText(t).then(()=>toast('Copiado'),()=>toast('No se pudo copiar'));
+}
+function vProd(){
+  Q('#main').innerHTML=`<div class="card"><b>Agregar producto</b><input id="a_sku" placeholder="SKU"><input id="a_n" placeholder="Nombre"><input id="a_p" type="number" step="0.01" placeholder="Precio"><input id="a_c" type="number" step="0.01" placeholder="Comisión %"><button class="big" onclick="addP()">Agregar</button></div>`
+  +prods.map(p=>`<div class="card"><b>${E(p.nombre)}</b> <small>${E(p.sku)}</small><label>Precio</label><input type="number" step="0.01" value="${p.precio}" onchange="upP('${p.id}','precio',+this.value)"><label>Comisión %</label><input type="number" step="0.01" value="${p.comision_pct}" onchange="upP('${p.id}','comision_pct',+this.value)"><label><input type="checkbox" style="width:auto" ${p.activo?'checked':''} onchange="upP('${p.id}','activo',this.checked)"> Activo (visible para vendedores)</label></div>`).join('');
+}
+async function upP(id,f,v){const r=await SB.from('productos').update({[f]:v}).eq('id',id);if(r.error)return toast(r.error.message);toast('Guardado');loadData()}
+async function addP(){
+  const p={sku:Q('#a_sku').value.trim(),nombre:Q('#a_n').value.trim(),precio:+Q('#a_p').value||0,comision_pct:+Q('#a_c').value||0};
+  if(!p.sku||!p.nombre)return toast('Falta SKU o nombre');
+  const r=await SB.from('productos').insert(p);if(r.error)return toast(r.error.message);
+  await loadData();render();
+}
+addEventListener('online',()=>{render();sync()});addEventListener('offline',render);
+if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js');
+init();
+</script></body></html>
